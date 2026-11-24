@@ -46,6 +46,7 @@ h1{margin:0;font-size:clamp(20px,3vw,28px);font-weight:400;letter-spacing:.06em;
 .lbl{font-size:11px;color:var(--muted);letter-spacing:.12em}
 .stat b{font-weight:400;font-size:20px;line-height:1.2;font-variant-numeric:tabular-nums}
 .stat.time b{color:var(--accent)}
+.stat.scold b{color:var(--warn)}
 
 /* game screen */
 .screen{position:relative;margin-inline:auto;width:min(100%,max(300px,calc((100vh - 250px) * var(--ar))));
@@ -122,6 +123,7 @@ kbd{font-family:inherit;color:var(--fg);background:var(--panel);padding:0 6px;bo
       <div class="stat"><span class="lbl">日付</span><b id="day">1日目（月）</b></div>
       <div class="stat time"><span class="lbl">時刻</span><b id="clock">09:00</b></div>
       <div class="stat"><span class="lbl">完了タスク</span><b id="done">0 件</b></div>
+      <div class="stat scold"><span class="lbl">怒られた</span><b id="scold">0 回</b></div>
     </div>
   </header>
 
@@ -191,7 +193,7 @@ const grid=v=>[...Array(ROWS)].map(()=>Array(COLS).fill(v));
 /* ---------------- state ---------------- */
 const TASKS=['メール返信（12件）','見積書の作成','会議資料のまとめ','議事録の清書','経費精算','企画書のたたき台','売上データの集計','顧客リストの整理','週報の作成','プレゼン資料の修正'];
 const WEEK=['月','火','水','木','金'];
-const S={min:540,day:1,done:0,taskIdx:0,task:{name:TASKS[0],progress:0},energy:80,firstSat:false,lastMin:540};
+const S={min:540,day:1,done:0,taskIdx:0,task:{name:TASKS[0],progress:0},energy:80,firstSat:false,lastMin:540,lastWork:540,scolded:0,warned:false,shake:0,flash:0};
 
 /* ---------------- map ---------------- */
 const blocked=grid(0), objAt=grid(null), seatAt=grid(null), sitSpot=grid(null);
@@ -421,6 +423,8 @@ const ICONS={
  rice:{p:{w:'#ffffff',k:'#24323a',o:'#c9ccd6'},m:["...o...","..owo..",".owwwo.",".wwwww.","owkkkwo","wkkkkkw","......."]},
  heart:{p:{r:'#e8577a'},m:[".rr.rr.","rrrrrrr","rrrrrrr",".rrrrr.","..rrr..","...r...","......."]},
  q:{p:{k:'#4a4560'},m:["..kkk..",".k...k.","....k..","...k...","...k...",".......","...k..."]},
+ anger:{p:{r:'#e03030'},m:[".rr.rr.","r.r.r.r","rr...rr",".......","rr...rr","r.r.r.r",".rr.rr."]},
+ sweat:{p:{b:'#4aa0f0',w:'#d8f0ff'},m:["....b..","...bb..","..bbbb.","..bwbb.","..bbbb.","...bb..","......."]},
  can:{p:{r:'#d64545',w:'#f6d0d0',g:'#9aa3b5'},m:["..ggg..",".rrrrr.",".rwrrr.",".rwrrr.",".rwrrr.",".rrrrr.","..ggg.."]},
 };
 function drawIcon(name,x,y){const ic=ICONS[name];if(!ic)return;ic.m.forEach((row,j)=>{for(let i=0;i<7;i++){const k=row[i];if(k!=='.'&&ic.p[k])R(x+i,y+j,1,1,ic.p[k]);}});}
@@ -570,7 +574,7 @@ function drawDecor(d,t,sky){
     const x=X+3,y=8,w=26,h=17,nf=clamp((S.min-1060)/70,0,1);
     R(x-2,y-2,w+4,h+4,'#4d556e');R(x-1,y-1,w+2,h+2,'#6b7390');
     for(let r=0;r<h;r++)R(x,y+r,w,1,mix(sky[0],sky[1],r/(h-1)));
-    ctx.save();ctx.beginPath();ctx.rect(x-camX,y-camY,w,h);ctx.clip();
+    ctx.save();ctx.beginPath();ctx.rect(x,y,w,h);ctx.clip();
     if(nf<.9){const cc=mix('#ffffff','#f4b8a0',clamp((S.min-980)/80,0,1));for(let c=0;c<2;c++){const cx=x+((S.min*.35+d.x*17+c*23)%(w+14))-7,cy=y+2+c*4;R(cx,cy+1,8,2,cc);R(cx+2,cy,4,1,cc);}}
     else{R(x+20,y+2,2,2,'#f4efd0');R(x+5,y+4,1,1,'#ffffff');R(x+12,y+1,1,1,'#ffffff');}
     const base=mix(sky[1],'#262a44',.5+.35*nf);
@@ -726,6 +730,7 @@ function stepAlong(e,dt){
 }
 function updateNPC(n,dt){
   if(n.talking)return;
+  if(n.state==='chase'){updateChase(n,dt);return;}
   if(n.state==='walk'){if(stepAlong(n,dt))arrive(n);return;}
   if(n.state==='sit'){
     n.amb-=dt;if(n.amb<=0){n.amb=rand(6,16);if(!n.icon&&Math.random()<.5){n.icon=pick(['dots','bulb','note','dots']);n.iconT=2.2;}}
@@ -852,7 +857,7 @@ function nextTask(){S.taskIdx=(S.taskIdx+1)%TASKS.length;S.task={name:TASKS[S.ta
 function work(){
   const p=player;
   if(S.energy<8){float('集中力ぎれ…','#ff8a5c');say('','集中力が切れてきた…。ラウンジでコーヒーでも飲もう。');return;}
-  const g=5+((Math.random()*6)|0);S.task.progress=Math.min(100,S.task.progress+g);S.energy=Math.max(0,S.energy-3);p.typing=.45;
+  const g=5+((Math.random()*6)|0);S.task.progress=Math.min(100,S.task.progress+g);S.lastWork=S.min;S.warned=false;S.energy=Math.max(0,S.energy-3);p.typing=.45;
   float('+'+g+'%','#6fd08c');
   if(S.task.progress>=100){S.done++;toast('タスク完了！「'+S.task.name+'」');nextTask();}
 }
@@ -863,6 +868,62 @@ function action(){
   if(p.sitting){say('','ふかふかで動けない…。（移動キーで立ち上がる）');return;}
   if(p.moving)return;
   const [dx,dy]=DV[p.dir];interactAt(p.x+dx,p.y+dy);
+}
+
+/* ---------------- scolding event ---------------- */
+// 仕事（作業）をしないまま時間がたつと部長が気づき、追いかけてきて叱る。
+const SLACK_WARN=35, SLACK_CHASE=50; // ゲーム内の分
+function onDuty(){return S.min>=570&&S.min<1080&&!isLunch();}
+function checkSlack(dt){
+  const p=player,boss=byId.suzuki;
+  if(!onDuty()){S.lastWork=S.min;S.warned=false;return;}
+  if(p.sitting&&p.pose==='desk')S.lastWork+=dt;            // 席にいる間はサボり時間が増えない
+  else if(p.sitting&&p.pose==='sitUp')S.lastWork-=dt;      // ソファでくつろぐと2倍の速さで増える
+  if(boss.state==='chase'||boss.talking||dlg.open)return;
+  const slack=S.min-S.lastWork;
+  if(slack>=SLACK_WARN&&!S.warned){S.warned=true;toast('部長の視線を感じる…');boss.icon='q';boss.iconT=3;}
+  if(slack>=SLACK_CHASE&&!(p.sitting&&p.pose==='desk'))startChase(boss);
+}
+function startChase(b){
+  if(b.goal&&b.goal.k)taken.delete(b.goal.k);
+  Object.assign(b,{goal:{type:'chase'},state:'chase',sitting:false,pose:null,act:null,icon:'anger',iconT:0,speed:4.6,chaseT:0,repath:0,path:null,wait:0});
+  toast('部長がこっちに来る…！');
+}
+function endChase(b,why){
+  b.speed=3.2;b.icon=null;S.warned=false;
+  if(why==='safe'){S.lastWork=S.min-15;toast('セーフ…！ 部長は席に戻っていった');}
+  else{S.lastWork=S.min-25;toast('部長をまいた…。あとが怖い');}
+  b.goal=null;goHome(b);
+}
+function updateChase(n,dt){
+  const p=player;n.chaseT+=dt;
+  if(p.sitting&&p.pose==='desk'&&!n.moving){endChase(n,'safe');return;}
+  if(n.chaseT>20&&!n.moving){endChase(n,'escaped');return;}
+  if(!n.moving&&!p.moving&&!dlg.open&&Math.abs(n.x-p.x)+Math.abs(n.y-p.y)===1){scold(n);return;}
+  if(!n.moving){n.repath-=dt;if(n.repath<=0||!n.path||!n.path.length){n.repath=.5;n.path=pathToAdjacent(n,p.x,p.y);if(!n.path)return;}}
+  if(n.path&&(n.path.length||n.moving))stepAlong(n,dt);
+}
+function scoldLines(){
+  const p=player,c=S.scolded,a=[];
+  if(p.sitting&&p.pose==='sitUp')a.push('こらっ！ 勤務中にソファでくつろぐんじゃない！');
+  else if(c===1)a.push('こらっ！ さっきから何をぶらぶらしとるんだ！');
+  else if(c===2)a.push('また君か！ さっきも言ったばかりだろう！');
+  else a.push('いい加減にしなさい！！ これで'+c+'回目だぞ！');
+  a.push(S.task.progress<30?'「'+S.task.name+'」、まだ'+S.task.progress+'%じゃないか。':'「'+S.task.name+'」の進み具合はどうなっとるんだね。');
+  a.push(c>=3?'このままだと査定に響くぞ。…さあ、席に戻りなさい。':'業務時間中は手を動かしなさい。わかったね？');
+  return a;
+}
+function scold(n){
+  const p=player;
+  n.dir=dirTo(n.x,n.y,p.x,p.y);if(!p.sitting)p.dir=dirTo(p.x,p.y,n.x,n.y);
+  n.talking=true;n.icon='anger';p.icon='sweat';p.path=null;p.pending=null;held.length=0;
+  S.scolded++;S.shake=.6;S.flash=.35;
+  say('鈴木 部長（部長）',scoldLines(),()=>{
+    n.talking=false;n.icon=null;n.speed=3.2;p.icon=null;
+    const before=S.energy;S.energy=Math.max(0,S.energy-10);if(before>S.energy)float('集中力 -'+(before-S.energy),'#ff8a5c');
+    toast('部長に怒られた…（'+S.scolded+'回目）');
+    S.lastWork=S.min;S.warned=false;n.goal=null;goHome(n);
+  });
 }
 
 /* ---------------- overlays ---------------- */
@@ -879,7 +940,7 @@ const fadeEl=document.getElementById('fade');
 function placeAtSeats(){
   occ.clear();taken.clear();
   for(const n of ents){
-    n.moving=false;n.path=null;n.talking=false;n.icon=null;n.goal=null;n.act=null;
+    n.moving=false;n.path=null;n.talking=false;n.icon=null;n.goal=null;n.act=null;if(n!==player)n.speed=3.2;
     if(n===player){n.x=9;n.y=5;n.dir='down';n.sitting=false;n.pose=null;}
     else{n.x=n.seat.x;n.y=n.seat.y;n.sitting=true;n.pose='desk';n.dir='up';n.state='sit';n.timer=rand(2,14);}
     setOcc(n.x,n.y,n);
@@ -888,7 +949,7 @@ function placeAtSeats(){
 let dayTurning=false;
 function nextDay(){
   dayTurning=true;fadeEl.textContent=(S.day+1)+'日目（'+WEEK[S.day%5]+'）';fadeEl.classList.add('on');
-  setTimeout(()=>{S.day++;S.min=540;S.lastMin=540;S.energy=100;if(dlg.open){dlg.open=false;dlgEl.hidden=true;}placeAtSeats();},700);
+  setTimeout(()=>{S.day++;S.min=540;S.lastMin=540;S.lastWork=540;S.warned=false;S.energy=100;if(dlg.open){dlg.open=false;dlgEl.hidden=true;}placeAtSeats();},700);
   setTimeout(()=>{fadeEl.classList.remove('on');dayTurning=false;toast('おはようございます。'+S.day+'日目の始業です');},1900);
 }
 function timeEvents(){
@@ -913,6 +974,7 @@ for(const n of STAFF){
   li.append(fc,who);rosterEl.appendChild(li);rosterRows[n.id]=who.lastChild;
 }
 function statusOf(n){
+  if(n.state==='chase')return ['talk',n.talking?'あなたを叱っている':'あなたのところへ向かっている！'];
   if(n.talking)return ['talk','あなたと会話中'];
   if(n.state==='sit')return ['sit','デスクで作業中'];
   if(n.state==='walk')return ['walk',n.goal&&n.goal.type==='home'?'席に戻るところ':(n.goal&&ACT[n.goal.act]?ACT[n.goal.act].label+'へ向かっている':'移動中').replace('中へ向かっている','へ向かっている')];
@@ -923,13 +985,15 @@ let hudT=0;
 function updateHUD(){
   $('clock').textContent=hhmm(S.min);
   $('day').textContent=S.day+'日目（'+WEEK[(S.day-1)%5]+'）';
-  $('done').textContent=S.done+' 件';
+  $('done').textContent=S.done+' 件';$('scold').textContent=S.scolded+' 回';
   $('taskName').textContent=S.task.name;$('taskPct').textContent=S.task.progress+'%';$('taskBar').style.width=S.task.progress+'%';
   $('energyVal').textContent=S.energy;$('energyBar').style.width=S.energy+'%';$('energyWrap').classList.toggle('low',S.energy<25);
   $('energyNote').textContent=S.energy>=70?'絶好調':S.energy>=40?'まだまだいける':S.energy>=8?'そろそろ休憩したい':'コーヒーが必要だ';
   const p=player;let hint;
   if(p.sitting&&p.pose==='desk')hint='Space（A）を押して作業を進める。移動キーで立ち上がる';
   else if(!S.firstSat)hint='▼印のデスクがあなたの席です。歩いて座ろう';
+  else if(byId.suzuki.state==='chase')hint='部長が来る！ 急いで自分の席に戻れば見逃してもらえるかも';
+  else if(S.min-S.lastWork>=25&&onDuty())hint='しばらく仕事をしていない…。部長に見つかる前に席に戻ろう';
   else if(S.energy<25)hint='集中力が低下中。ラウンジのコーヒーや自販機で回復しよう';
   else hint='社員に話しかけたり、気になる物を調べてみよう';
   $('hint').textContent=hint;
@@ -950,14 +1014,15 @@ function drawEnt(e,pos,t){
     else{spr=e.spr.left[step===1?1:0];flip=e.dir==='right';if(step===2)dy-=1;}
   }
   dx=Math.round(dx);dy=Math.round(dy);
-  if(flip){ctx.save();ctx.translate(dx+16-camX,dy-camY);ctx.scale(-1,1);ctx.drawImage(spr,0,0);ctx.restore();}
+  if(flip){ctx.save();ctx.translate(dx+16,dy);ctx.scale(-1,1);ctx.drawImage(spr,0,0);ctx.restore();}
   else ctx.drawImage(spr,dx,dy);
   e._dy=dy;e._dx=dx;
 }
 function render(t){
   const vw=VW*T,vh=VH*T,pp=entPos(player);
   camX=Math.round(clamp(pp[0]+8-vw/2,0,W-vw));camY=Math.round(clamp(pp[1]+8-vh/2,0,H-vh));
-  ctx.setTransform(1,0,0,1,-camX,-camY);
+  const sh=S.shake>0?2:0,sx=sh?Math.round(Math.random()*sh*2-sh):0,sy=sh?Math.round(Math.random()*sh*2-sh):0;
+  ctx.setTransform(1,0,0,1,-camX+sx,-camY+sy);
   ctx.drawImage(bg,0,0);
   const sky=skyAt(S.min);
   for(const d of decor)drawDecor(d,t,sky);
@@ -967,9 +1032,10 @@ function render(t){
   list.sort((a,b)=>a[0]-b[0]);
   for(const it of list){if(it[2])drawEnt(it[1],it[2],t);else it[1].draw(it[1],t);}
   if(!S.firstSat){const s=player.seat,bx=s.x*T+s.offX+5,by=s.y*T-14+(Math.floor(t*3)%2);R(bx,by,7,1,'#ffcf4a');R(bx+1,by+1,5,1,'#ffcf4a');R(bx+2,by+2,3,1,'#ffcf4a');R(bx+3,by+3,1,1,'#ffcf4a');R(bx,by-1,7,1,O);}
-  for(const e of ents){if(e.icon&&e!==player)drawBubble(e._dx+3,e._dy-11+(Math.floor(t*2+e.seed*4)%2),e.icon);}
-  if(!player.sitting){const x=player._dx+8,y=player._dy-5+(Math.floor(t*2.5)%2);R(x-2,y,5,1,'#ffcf4a');R(x-1,y+1,3,1,'#ffcf4a');R(x,y+2,1,1,'#ffcf4a');}
+  for(const e of ents){if(e.icon)drawBubble(e._dx+3,e._dy-11+(Math.floor(t*2+e.seed*4)%2),e.icon);}
+  if(!player.sitting&&!player.icon){const x=player._dx+8,y=player._dy-5+(Math.floor(t*2.5)%2);R(x-2,y,5,1,'#ffcf4a');R(x-1,y+1,3,1,'#ffcf4a');R(x,y+2,1,1,'#ffcf4a');}
   ctx.setTransform(1,0,0,1,0,0);
+  if(S.flash>0)R(0,0,cv.width,cv.height,'rgba(230,40,40,'+(S.flash*.6).toFixed(3)+')');
   const ev=clamp((S.min-990)/60,0,1)*(1-clamp((S.min-1090)/40,0,1)),nf=clamp((S.min-1080)/60,0,1);
   if(ev>0)R(0,0,cv.width,cv.height,'rgba(255,140,60,'+(ev*.08).toFixed(3)+')');
   if(nf>0)R(0,0,cv.width,cv.height,'rgba(30,40,110,'+(nf*.14).toFixed(3)+')');
@@ -1029,11 +1095,12 @@ let last=performance.now();
 function loop(now){
   const dt=Math.min(.05,(now-last)/1000);last=now;const t=now/1000;
   if(!dayTurning){
-    S.min=Math.min(S.min+dt,1170.5);timeEvents();
+    S.min=Math.min(S.min+dt,1170.5);timeEvents();checkSlack(dt);
     for(const n of ents)if(n!==player)updateNPC(n,dt);
     updatePlayer(dt);
   }
   if(dlg.open){const page=dlg.pages[dlg.i];if(dlg.shown<page.length){dlg.shown=Math.min(page.length,dlg.shown+dt*40);dtextEl.textContent=page.slice(0,Math.floor(dlg.shown));}}
+  if(S.shake>0)S.shake-=dt;if(S.flash>0)S.flash-=dt;
   render(t);
   hudT-=dt;if(hudT<=0){hudT=.2;updateHUD();}
   requestAnimationFrame(loop);
@@ -1042,7 +1109,7 @@ function loop(now){
 function start(data){
   data=data||{};
   placeAtSeats();
-  if(typeof data.min==='number'){Object.assign(S,{min:data.min,lastMin:data.min,day:data.day||1,done:data.done||0,taskIdx:data.taskIdx||0,energy:data.energy??80,firstSat:!!data.firstSat});
+  if(typeof data.min==='number'){Object.assign(S,{min:data.min,lastMin:data.min,day:data.day||1,done:data.done||0,taskIdx:data.taskIdx||0,energy:data.energy??80,firstSat:!!data.firstSat,scolded:data.scolded||0,lastWork:data.min});
     S.task={name:TASKS[S.taskIdx],progress:data.prog||0};
     if(typeof data.px==='number'&&walkable(data.px,data.py,player,true)&&!seatAt[data.py][data.px]){clrOcc(player.x,player.y,player);player.x=data.px;player.y=data.py;setOcc(player.x,player.y,player);}}
   else{
@@ -1050,7 +1117,7 @@ function start(data){
   }
   layout();updateHUD();requestAnimationFrame(t=>{last=t;loop(t);});
 }
-try{window.claude?.hot?.snapshot?.(()=>({min:S.min,day:S.day,done:S.done,taskIdx:S.taskIdx,prog:S.task.progress,energy:S.energy,firstSat:S.firstSat,px:player.x,py:player.y}));}catch(e){}
+try{window.claude?.hot?.snapshot?.(()=>({min:S.min,day:S.day,done:S.done,taskIdx:S.taskIdx,prog:S.task.progress,energy:S.energy,firstSat:S.firstSat,scolded:S.scolded,px:player.x,py:player.y}));}catch(e){}
 window.claude?.hot?.ready?window.claude.hot.ready(start):start(window.claude?.hot?.data??{});
 })();
 </script>
